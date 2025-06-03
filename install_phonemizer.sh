@@ -67,8 +67,8 @@ cd piper-phonemize
 info "Patching setup.cfg for ONNX paths..."
 cat > setup.cfg <<EOF
 [build_ext]
-include-dirs = $ONNXRUNTIME_DIR/include
-library-dirs = $ONNXRUNTIME_DIR/lib
+include_dirs = $ONNXRUNTIME_DIR/include
+library_dirs = $ONNXRUNTIME_DIR/lib
 EOF
 
 # 🧱 Build and install piper_phonemize
