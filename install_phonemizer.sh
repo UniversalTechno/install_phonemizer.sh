@@ -1,55 +1,88 @@
-#!/usr/bin/env bash
+#!/bin/bash
+
 set -e
 
-echo "🔧 Detecting system and configuring Docker repo..."
-. /etc/os-release
-DISTRO_ID=$ID
-DISTRO_CODENAME=$VERSION_CODENAME
+function title() {
+  echo -e "\033[1;34m➡ $1\033[0m"
+}
 
-if [[ "$DISTRO_ID" == "ubuntu" || "$DISTRO_ID" == "debian" ]]; then
-  sudo mkdir -p /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/${DISTRO_ID}/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DISTRO_ID} jammy stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-else
-  echo "❌ Unsupported distribution: $DISTRO_ID"
+function info() {
+  echo -e "\033[1;32m$1\033[0m"
+}
+
+function warn() {
+  echo -e "\033[1;33m$1\033[0m"
+}
+
+function error_exit() {
+  echo -e "\033[1;31m$1\033[0m" >&2
   exit 1
-fi
+}
 
-echo "📦 Updating APT and installing build dependencies..."
-sudo apt update
-sudo apt install -y \
-  git python3 python3-pip python3-venv \
-  build-essential cmake pkg-config \
-  libespeak-ng-dev curl g++ unzip
+# Ensure script runs from its directory
+cd "$(dirname "$0")"
 
-echo "🐍 Creating Python virtual environment..."
+# 🐧 OS Detection
+OS=$(lsb_release -is)
+VER=$(lsb_release -rs)
+ARCH=$(uname -m)
+info "Detected OS: $OS $VER ($ARCH)"
+
+# 📦 Ensure APT is updated and required tools are installed
+info "Installing dependencies..."
+sudo apt-get update
+sudo apt-get install -y \
+  git curl build-essential cmake pkg-config \
+  python3 python3-pip python3-venv \
+  libespeak-ng-dev
+
+# 🐍 Setup Python venv
+info "Creating virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip setuptools wheel
 
-echo "📥 Cloning and building ONNX Runtime..."
-if [[ ! -d "onnxruntime" ]]; then
+# 📥 Clone ONNX Runtime (if not already exists)
+if [ ! -d "onnxruntime" ]; then
+  info "Cloning ONNX Runtime..."
   git clone --recursive https://github.com/microsoft/onnxruntime
 fi
-
 cd onnxruntime
-./build.sh --config Release --build_shared_lib --parallel --build_dir build --skip_tests
+
+# 🔧 Build ONNX Runtime
+info "Building ONNX Runtime..."
+./build.sh --config Release --build_shared_lib --parallel
 cd ..
 
-echo "🔧 Exporting ONNXRUNTIME_DIR..."
-export ONNXRUNTIME_DIR="$PWD/onnxruntime/build/Linux/Release"
-echo "export ONNXRUNTIME_DIR=$ONNXRUNTIME_DIR" >> venv/bin/activate
-export CPLUS_INCLUDE_PATH="$ONNXRUNTIME_DIR/include"
-export LIBRARY_PATH="$ONNXRUNTIME_DIR/lib"
+# 🔧 Export ONNXRUNTIME_DIR
+export ONNXRUNTIME_DIR=$(realpath onnxruntime/build/Linux/Release)
 
-echo "📦 Installing piper_phonemize with correct paths..."
-pip install --no-binary :all: \
-  --global-option=build_ext \
-  --global-option="-I$ONNXRUNTIME_DIR/include" \
-  --global-option="-L$ONNXRUNTIME_DIR/lib" \
-  git+https://github.com/rhasspy/piper-phonemize
+# 🧪 Clone and patch piper_phonemize
+if [ ! -d "piper-phonemize" ]; then
+  info "Cloning piper-phonemize..."
+  git clone https://github.com/rhasspy/piper-phonemize
+fi
+cd piper-phonemize
 
-echo "✅ All done! To activate your environment, run:"
-echo "    source venv/bin/activate"
+info "Patching setup.cfg for ONNX paths..."
+cat > setup.cfg <<EOF
+[build_ext]
+include-dirs = $ONNXRUNTIME_DIR/include
+library-dirs = $ONNXRUNTIME_DIR/lib
+EOF
+
+# 🧱 Build and install piper_phonemize
+info "Installing piper_phonemize in editable mode..."
+pip install -e .
+
+cd ..
+
+# 🔁 Add ONNX runtime lib path to venv
+if ! grep -q "LD_LIBRARY_PATH" venv/bin/activate; then
+  echo "export LD_LIBRARY_PATH=$ONNXRUNTIME_DIR/lib:\$LD_LIBRARY_PATH" >> venv/bin/activate
+  info "LD_LIBRARY_PATH added to venv activation script."
+fi
+
+info "✅ Installation complete!"
+echo "Run: source venv/bin/activate"
+echo "Then: python -c 'from piper_phonemize import phonemize_espeak; print(phonemize_espeak("hello", "en"))'"
